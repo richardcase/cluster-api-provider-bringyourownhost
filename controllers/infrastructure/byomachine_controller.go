@@ -5,12 +5,14 @@ package controllers
 
 import (
 	"context"
-	"errors"
+	//"errors"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -123,16 +125,27 @@ func (r *ByoMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	logger = logger.WithValues("cluster", cluster.Name)
 
-	byoCluster := &infrav1.ByoCluster{}
-	infraClusterName := client.ObjectKey{
-		Namespace: byoMachine.Namespace,
-		Name:      cluster.Spec.InfrastructureRef.Name,
+	ref := cluster.Spec.InfrastructureRef
+	logger.V(2).Info("getting infra cluster", "kind", ref.Kind)
+	obj, err := external.Get(ctx, r.Client, ref, cluster.Namespace)
+	if err != nil {
+		if apierrors.IsNotFound(errors.Cause(err)) {
+			logger.Info("Could not find external object for cluster, requeuing", "refGroupVersionKind", ref.GroupVersionKind(), "refName", ref.Name)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
-	if err = r.Client.Get(ctx, infraClusterName, byoCluster); err != nil {
-		logger.Error(err, "failed to get infra cluster")
-		return ctrl.Result{}, nil
-	}
+	// byoCluster := &infrav1.ByoCluster{}
+	// infraClusterName := client.ObjectKey{
+	// 	Namespace: byoMachine.Namespace,
+	// 	Name:      cluster.Spec.InfrastructureRef.Name,
+	// }
+
+	// if err = r.Client.Get(ctx, infraClusterName, byoCluster); err != nil {
+	// 	logger.Error(err, "failed to get infra cluster")
+	// 	return ctrl.Result{}, nil
+	// }
 
 	helper, _ := patch.NewHelper(byoMachine, r.Client)
 	defer func() {
@@ -153,12 +166,12 @@ func (r *ByoMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Create the machine scope
 	machineScope, err := newByoMachineScope(byoMachineScopeParams{
-		Client:     r.Client,
-		Cluster:    cluster,
-		Machine:    machine,
-		ByoCluster: byoCluster,
-		ByoMachine: byoMachine,
-		ByoHost:    refByoHost,
+		Client:       r.Client,
+		Cluster:      cluster,
+		Machine:      machine,
+		InfraCluster: obj,
+		ByoMachine:   byoMachine,
+		ByoHost:      refByoHost,
 	})
 	if err != nil {
 		return ctrl.Result{}, err
@@ -555,7 +568,34 @@ func (r *ByoMachineReconciler) attachByoHost(ctx context.Context, machineScope *
 	}
 	host.Annotations[infrav1.EndPointIPAnnotation] = machineScope.Cluster.Spec.ControlPlaneEndpoint.Host
 	host.Annotations[infrav1.K8sVersionAnnotation] = strings.Split(*machineScope.Machine.Spec.Version, "+")[0]
-	host.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = machineScope.ByoCluster.Spec.BundleLookupBaseRegistry
+
+	lookupRegistry, found, err := unstructured.NestedString(machineScope.InfraCluster.Object, "spec", "bundleLookupBaseRegistry")
+	if err != nil {
+		return ctrl.Result{}, errors.Wrapf(err, "failed to get bundleLookupBaseRegistry")
+	}
+	if !found {
+		logger.Info("couldn't find bundle registry in spec.bundleLookupBaseRegistry")
+		return ctrl.Result{}, errors.New("failed to get bundle registry")
+	}
+
+	// lookupTag, found, err := unstructured.NestedString(machineScope.InfraCluster.Object, "spec", "bundleLookupTag")
+	// if err != nil {
+	// 	return ctrl.Result{}, errors.Wrapf(err, "failed to get bundleLookupTag")
+	// }
+	// if !found {
+	// 	logger.Info("couldn't find bundle registry in spec.bundleLookupTag")
+	// 	return ctrl.Result{}, errors.New("failed to get bundle tag")
+	// }
+
+	// lookupRegistry, lookupTag, err := machineScope.BundleLookup()
+	// if err != nil {
+	// 	logger.Error(err, "failed to get bundle lookup details from infra cluster")
+	// 	return ctrl.Result{}, err
+	// }
+	//logger.Info("bundle look up from scope", "registry", lookupRegistry, "tag", lookupTag)
+	logger.Info("bundle look up from scope", "registry", lookupRegistry)
+
+	host.Annotations[infrav1.BundleLookupBaseRegistryAnnotation] = lookupRegistry
 
 	err = byohostHelper.Patch(ctx, &host)
 	if err != nil {

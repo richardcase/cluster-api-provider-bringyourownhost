@@ -6,6 +6,7 @@ package controllers
 import (
 	"github.com/pkg/errors"
 	infrav1 "github.com/vmware-tanzu/cluster-api-provider-bringyourownhost/apis/infrastructure/v1beta1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -13,12 +14,13 @@ import (
 
 // byoMachineScopeParams defines the input parameters used to create a new byoMachineScope.
 type byoMachineScopeParams struct {
-	Client     client.Client
-	Cluster    *clusterv1.Cluster
-	Machine    *clusterv1.Machine
-	ByoCluster *infrav1.ByoCluster
-	ByoMachine *infrav1.ByoMachine
-	ByoHost    *infrav1.ByoHost
+	Client  client.Client
+	Cluster *clusterv1.Cluster
+	Machine *clusterv1.Machine
+	//ByoCluster   *infrav1.ByoCluster
+	ByoMachine   *infrav1.ByoMachine
+	ByoHost      *infrav1.ByoHost
+	InfraCluster *unstructured.Unstructured
 }
 
 // byoMachineScope defines a scope defined around a ByoMachine and its machine, and its cluster.
@@ -27,9 +29,10 @@ type byoMachineScope struct {
 	patchHelper *patch.Helper
 	Cluster     *clusterv1.Cluster
 	Machine     *clusterv1.Machine
-	ByoCluster  *infrav1.ByoCluster
-	ByoMachine  *infrav1.ByoMachine
-	ByoHost     *infrav1.ByoHost
+	//ByoCluster  *infrav1.ByoCluster
+	ByoMachine   *infrav1.ByoMachine
+	ByoHost      *infrav1.ByoHost
+	InfraCluster *unstructured.Unstructured
 }
 
 // newBYOMachineScope creates a new MachineScope from the supplied parameters.
@@ -47,8 +50,8 @@ func newByoMachineScope(params byoMachineScopeParams) (*byoMachineScope, error) 
 	if params.ByoMachine == nil {
 		return nil, errors.New("BYOMachine is required when creating a MachineScope")
 	}
-	if params.ByoCluster == nil {
-		return nil, errors.New("ByoCluster is required when creating a MachineScope")
+	if params.InfraCluster == nil {
+		return nil, errors.New("InfraCluster is required when creating a MachineScope")
 	}
 
 	helper, err := patch.NewHelper(params.ByoMachine, params.Client)
@@ -57,12 +60,27 @@ func newByoMachineScope(params byoMachineScopeParams) (*byoMachineScope, error) 
 	}
 
 	return &byoMachineScope{
-		client:      params.Client,
-		patchHelper: helper,
-		Cluster:     params.Cluster,
-		Machine:     params.Machine,
-		ByoCluster:  params.ByoCluster,
-		ByoMachine:  params.ByoMachine,
-		ByoHost:     params.ByoHost,
+		client:       params.Client,
+		patchHelper:  helper,
+		Cluster:      params.Cluster,
+		Machine:      params.Machine,
+		InfraCluster: params.InfraCluster,
+		ByoMachine:   params.ByoMachine,
+		ByoHost:      params.ByoHost,
 	}, nil
+}
+
+func (b *byoMachineScope) BundleLookup() (string, string, error) {
+	obj := b.InfraCluster
+	lookupRegistry, _, err := unstructured.NestedString(obj.Object, "spec", "bundleLookupBaseRegistry")
+	if err != nil {
+		return "", "", errors.Wrapf(err, "failed to get bundleLookupBaseRegistry on %v %q", obj.GroupVersionKind(), obj.GetName())
+	}
+
+	lookupTag, _, err := unstructured.NestedString(obj.Object, "spec", "bundleLookupTag")
+	if err != nil {
+		return "", "", errors.Wrapf(err, "failed to get bundleLookupTag on %v %q", obj.GroupVersionKind(), obj.GetName())
+	}
+
+	return lookupRegistry, lookupTag, nil
 }
